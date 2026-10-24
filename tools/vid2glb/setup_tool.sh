@@ -21,7 +21,7 @@ PIP="$VENV/bin/pip"
 
 log "core deps (numpy 1.x: mediapipe + trimesh pin it)"
 "$PIP" -q install "numpy==1.26.4" "opencv-python-headless==4.11.0.86" \
-                   "protobuf==4.25.3" absl-py attrs flatbuffers scipy pillow
+                   "protobuf==4.25.3" absl-py attrs flatbuffers scipy pillow matplotlib trimesh
 
 log "mediapipe 0.10.14 (last release that BUNDLES the pose .tflite models)"
 if ! "$VENV/bin/python" - <<'PY' 2>/dev/null

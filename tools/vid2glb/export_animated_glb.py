@@ -104,34 +104,53 @@ def add_accessor(gltf: dict, blob: list[bytes], arr: np.ndarray, comp_type: int,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--glb", required=True)
-    ap.add_argument("--video", required=True, help="unused; kept for CLI symmetry")
-    ap.add_argument("--scan", required=True)
-    ap.add_argument("--start", type=int, required=True)
-    ap.add_argument("--end", type=int, required=True)
+    ap.add_argument("--video", default="", help="unused; kept for CLI symmetry")
+    ap.add_argument("--scan", default="")
+    ap.add_argument("--start", type=int, default=0)
+    ap.add_argument("--end", type=int, default=0)
+    ap.add_argument("--bake", default="",
+                    help="solve_motion/build_cycle npz; overrides --scan")
+    ap.add_argument("--total-frames", type=int, default=0,
+                    help="loop the baked cycle to this many frames (0 = one cycle)")
     ap.add_argument("--fps", type=float, default=24.0)
     ap.add_argument("--smooth", type=int, default=5)
     ap.add_argument("--out", default="animated.glb")
     args = ap.parse_args()
 
-    scan = load_scan(args.scan)
-    raw, vis = landmark_sequence(scan, args.start, args.end)
-    raw = smooth_landmarks(raw, args.smooth)
-    T = len(raw)
-
     container = glblib.GLB(args.glb)
     scene = glblib.load(args.glb)
     rig = Rig(scene)
-    ret = rt.Retargeter({})
 
-    canon_seq = np.stack([rt.to_canonical(raw[k], vis[k])[0] for k in range(T)])
-    yaws = body_yaw(canon_seq)
-    track = root_track(raw)
-
-    # collect global poses per frame
-    frames: list[dict[int, np.ndarray]] = []
-    for k in range(T):
-        dirs = ret.bone_directions(canon_seq[k], vis[k])
-        frames.append(rig.pose(dirs, root_offset=track[k], yaw=float(yaws[k])))
+    if args.bake:
+        # Baked cycle: every node's local transform is already solved, so replay is
+        # pure FK. Looping it to `--total-frames` matches the length of the source
+        # clip, which is what makes this a full-length animation rather than a slice.
+        import render_bake as rb
+        bake = np.load(args.bake, allow_pickle=True)
+        N = int(bake["N"])
+        scene.parent_of = {}
+        for i, nd in enumerate(scene.nodes):
+            for c in nd.get("children", []):
+                scene.parent_of[c] = i
+        G = rb.local_to_globals(scene, bake["local"].transpose(1, 0, 2, 3))
+        T = args.total_frames or N
+        frames = [{i: G[i, k % N] for i in range(len(scene.nodes))} for k in range(T)]
+        src = bake["src"] if "src" in bake else [0, T]
+        args.start, args.end = int(src[0]), int(src[1])
+        print(f"bake: {N}-frame cycle looped to {T} frames")
+    else:
+        scan = load_scan(args.scan)
+        raw, vis = landmark_sequence(scan, args.start, args.end)
+        raw = smooth_landmarks(raw, args.smooth)
+        T = len(raw)
+        ret = rt.Retargeter({})
+        canon_seq = np.stack([rt.to_canonical(raw[k], vis[k])[0] for k in range(T)])
+        yaws = body_yaw(canon_seq)
+        track = root_track(raw)
+        frames: list[dict[int, np.ndarray]] = []
+        for k in range(T):
+            dirs = ret.bone_directions(canon_seq[k], vis[k])
+            frames.append(rig.pose(dirs, root_offset=track[k], yaw=float(yaws[k])))
 
     gltf = container.gltf
     blob = [container._bin]
@@ -200,7 +219,8 @@ def main():
         channels.append({"sampler": len(samplers) - 1,
                          "target": {"node": root, "path": "translation"}})
 
-    name = f"retarget_frames_{args.start}_{args.end}"
+    name = (f"retarget_cycle_x{T}" if args.bake
+            else f"retarget_frames_{args.start}_{args.end}")
     anim = {"name": name, "channels": channels, "samplers": samplers}
     gltf.setdefault("animations", []).append(anim)
 
